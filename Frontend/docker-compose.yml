@@ -1,0 +1,21 @@
+services:
+
+  frontend:
+    build: ./Engineering_Knowledge_Search_Platform/Frontend
+    container_name: react_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+  backend:
+    build: ./Engineering_Knowledge_Search_Platform/Backend
+    container_name: node_backend
+    ports:
+      - "5000:5000"
+
+  ai-pipeline:
+    build: ./Engineering_Knowledge_Search_Platform/AI_pipeline
+    container_name: ai_pipeline
+    ports:
+      - "8000:8000"
