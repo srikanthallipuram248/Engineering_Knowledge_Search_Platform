@@ -10,4 +10,5 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["python", "ai_main.py"]
+#CMD ["python", "ai_main.py"]
+CMD ["uvicorn", "ai_main:app", "--host", "0.0.0.0", "--port", "8000"]
