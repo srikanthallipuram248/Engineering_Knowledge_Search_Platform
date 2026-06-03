@@ -11,9 +11,12 @@ from shared.config import settings
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Create all tables on startup (use Alembic for production migrations)
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+    except Exception:
+        # DB unavailable — fine for Phase 1 (analyzer doesn't need it)
+        pass
     yield
     await engine.dispose()
 
@@ -28,24 +31,26 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ── Routers (uncomment as you implement each service) ──────────────────────
+# ── Routers ────────────────────────────────────────────────────────────────
+from analyzer_service.controllers import router as analyzer_router
+
+app.include_router(analyzer_router, prefix="/api/v1/analyze", tags=["Analyzer"])
+
+# Uncomment as you implement each service:
 # from auth_service.controllers import router as auth_router
 # from search_service.search_controller import router as search_router
 # from chat_service.chat_controller import router as chat_router
-# from analyzer_service.controllers import router as analyzer_router
 # from document_service.document_controller import router as document_router
-
 # app.include_router(auth_router,     prefix="/api/v1/auth",      tags=["Auth"])
 # app.include_router(search_router,   prefix="/api/v1/search",    tags=["Search"])
 # app.include_router(chat_router,     prefix="/api/v1/chat",      tags=["Chat"])
-# app.include_router(analyzer_router, prefix="/api/v1/analyze",   tags=["Analyzer"])
 # app.include_router(document_router, prefix="/api/v1/documents", tags=["Documents"])
 
 
