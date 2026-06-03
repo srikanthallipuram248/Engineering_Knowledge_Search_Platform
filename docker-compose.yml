@@ -1,5 +1,69 @@
 services:
 
+  # ── Databases ─────────────────────────────────────────────────────────────
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: eksp_postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: eksp_user
+      POSTGRES_PASSWORD: eksp_password
+      POSTGRES_DB: eksp_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eksp_user -d eksp_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - eksp_network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: eksp_qdrant
+    ports:
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - eksp_network
+
+  # ── Application services ───────────────────────────────────────────────────
+
+  backend:
+    build: ./Backend
+    container_name: eksp_backend
+    ports:
+      - "5000:5000"
+    env_file:
+      - ./Backend/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    networks:
+      - eksp_network
+
+  ai-pipeline:
+    build: ./AI_pipeline
+    container_name: eksp_ai_pipeline
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./AI_pipeline/.env
+    depends_on:
+      qdrant:
+        condition: service_started
+    volumes:
+      - uploads_data:/app/uploads
+    networks:
+      - eksp_network
+
   frontend:
     build: ./Frontend
     container_name: eksp_frontend
@@ -10,36 +74,13 @@ services:
     networks:
       - eksp_network
 
-  backend:
-    build: ./Backend
-    container_name: eksp_backend
-    ports:
-      - "5000:5000"
-    env_file:
-      - ./Backend/.env
-    depends_on:
-      - ai-pipeline
-    networks:
-      - eksp_network
-    volumes:
-      - ./Backend:/app
-
-  ai-pipeline:
-    build: ./AI_pipeline
-    container_name: eksp_ai_pipeline
-    ports:
-      - "8000:8000"
-    env_file:
-      - ./AI_pipeline/.env
-    networks:
-      - eksp_network
-    volumes:
-      - ./AI_pipeline:/app
-      - ai_pipeline_data:/app/data
-
+# ── Volumes ────────────────────────────────────────────────────────────────
 volumes:
-  ai_pipeline_data:
+  postgres_data:
+  qdrant_data:
+  uploads_data:
 
+# ── Network ────────────────────────────────────────────────────────────────
 networks:
   eksp_network:
     driver: bridge

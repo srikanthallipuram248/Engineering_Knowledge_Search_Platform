@@ -1,131 +1,198 @@
-# AGENTS.md — Agent Design Guide
+# AGENTS.md — Agent & Service Design Guide
 
-This document covers the design, responsibilities, prompt contracts, extension points, and operational notes for every AI agent in the Engineering Knowledge Search Platform.
+This document covers the design, flow, prompt contracts, and extension points for every AI-driven service in the Engineering Knowledge Search Platform.
 
 ---
 
 ## Table of Contents
 
-- [Agent Overview](#agent-overview)
-- [Agent 1 — Repo Analyzer Agent](#agent-1--repo-analyzer-agent)
-- [Agent 2 — Knowledge Chat Agent](#agent-2--knowledge-chat-agent)
-- [Shared Interfaces](#shared-interfaces)
-- [LLM Client Layer](#llm-client-layer)
+- [Service Map](#service-map)
+- [Hybrid RAG Decision Layer](#hybrid-rag-decision-layer)
+- [Phase 1 — Repo Analyzer Service](#phase-1--repo-analyzer-service)
+- [Phase 2 — Chat Service (RAG)](#phase-2--chat-service-rag)
+- [AI Pipeline — Ingestion](#ai-pipeline--ingestion)
+- [Code Repository Ingestion Deep Dive](#code-repository-ingestion-deep-dive)
+- [LLM Clients](#llm-clients)
 - [Prompt Engineering Guidelines](#prompt-engineering-guidelines)
-- [Adding a New Agent](#adding-a-new-agent)
-- [Operational Notes](#operational-notes)
+- [Extending the Platform](#extending-the-platform)
 
 ---
 
-## Agent Overview
-
-| Agent | File | Phase | Trigger | Output |
-|-------|------|-------|---------|--------|
-| `RepoAnalyzerAgent` | `agents/repo_analyzer_agent.py` | Phase 1 | User uploads/clones a repo | Structured architecture summary |
-| `ChatAgent` | `agents/chat_agent.py` | Phase 2 | User sends a chat message | Streamed answer with source citations |
-
-Both agents inherit from `IAgent` (`agents/base.py`) and are orchestrated by a `Service` layer. They never touch HTTP — endpoints call services, services call agents.
+## Service Map
 
 ```
-Endpoint → Service → Agent → (LLM · VectorStore · Ingestion)
+Backend/
+├── api_gateway/            Entry point, middleware (auth, rate-limit, CORS)
+├── auth_service/           User registration, login, JWT
+├── search_service/         Semantic search — embed query → Qdrant → rerank → return chunks
+├── chat_service/           RAG chat — retrieval → decision layer → LLM → stream answer
+│   └── rag_engine/
+│       ├── decision_layer.py   ← THE core routing logic (3 branches)
+│       └── response_merger.py  ← blends internal + general LLM
+├── analyzer_service/       Phase 1 — repo upload/clone → architecture summary
+└── document_service/       File uploads, metadata, viewer pre-extraction
+
+AI_pipeline/
+├── connectors/             Pull content from GitHub, Git, Jira, Confluence, SharePoint
+├── extraction/             Parse raw files → text (PDF, DOCX, HTML, code, zip)
+├── processing/             Clean + chunk extracted text
+├── embeddings/             Batch-embed chunks with OpenAI
+├── indexing/               Upsert into Qdrant, manage collections
+└── orchestration/          Pipeline coordination + scheduler for re-ingestion
 ```
 
 ---
 
-## Agent 1 — Repo Analyzer Agent
+## Hybrid RAG Decision Layer
 
-**File:** `AI_pipeline/app/agents/repo_analyzer_agent.py`
-**Service:** `AI_pipeline/app/services/repo_analysis_service.py`
+**File:** `Backend/chat_service/rag_engine/decision_layer.py`
+
+### The Problem
+
+A simple binary (use KB or don't) fails in practice:
+- Internal KB has partial coverage → binary "no match" wastes relevant chunks
+- Forcing KB-only gives wrong answers when score is marginally below threshold
+
+### 3-Branch Solution
+
+```
+Qdrant top-1 similarity score
+          │
+          ├── Score > 0.80 ──────────────► Internal RAG only
+          │                                 Ground answer entirely in KB chunks
+          │                                 High confidence, cite sources
+          │
+          ├── Score 0.60 – 0.80 ─────────► Merge (response_merger.py)
+          │                                 Retrieve top-k internal chunks AND
+          │                                 query general LLM in parallel.
+          │                                 Merge: internal context prefixed,
+          │                                 general LLM provides gap-fill.
+          │                                 Label sections: [From your KB] / [General]
+          │
+          └── Score < 0.60 ─────────────► General LLM only
+                                           No internal context injected.
+                                           Answer prefixed with:
+                                           "This answer is from general knowledge,
+                                            not from your team's documents."
+```
+
+### `decision_layer.py` contract
+
+```python
+class RAGDecision(Enum):
+    INTERNAL = "internal"        # score > 0.80
+    MERGE    = "merge"           # 0.60 <= score <= 0.80
+    GENERAL  = "general"         # score < 0.60
+
+class DecisionLayer:
+    HIGH_THRESHOLD: float = 0.80
+    LOW_THRESHOLD:  float = 0.60
+
+    def route(self, top_score: float) -> RAGDecision: ...
+    async def execute(self, question, chunks, decision) -> ChatResponse: ...
+```
+
+### `response_merger.py` contract
+
+For the merge branch:
+
+```python
+class ResponseMerger:
+    async def merge(
+        self,
+        question: str,
+        internal_chunks: List[Chunk],   # from Qdrant
+        general_answer: str,            # from general LLM
+    ) -> MergedResponse:
+        """
+        Returns a unified answer where internal chunks are preferred
+        for facts, general LLM fills gaps. Sources are clearly labelled.
+        """
+```
+
+### Thresholds
+
+Thresholds are configurable via env vars `RAG_HIGH_THRESHOLD` and `RAG_LOW_THRESHOLD`. Start with `0.80 / 0.60`; tune after reviewing real query logs.
+
+---
+
+## Phase 1 — Repo Analyzer Service
+
+**Location:** `Backend/analyzer_service/`
 **Endpoint:** `POST /api/v1/analyze/repo`
 
 ### Responsibility
 
-Given a code repository (as a local extracted path), produce a structured summary covering:
-- Project purpose
-- Detected tech stack
-- High-level architecture
-- Key modules and their roles
-- Recommended onboarding entry points
+Accept a code repository (`.zip` upload or Git URL), understand its structure, and produce a developer-friendly architecture summary using Claude.
 
 ### Decision Tree
 
 ```
-repo_path received
-      │
-      ▼
-Does README.md / README.rst / README.txt exist?
-      │
-   YES ▼                         NO ▼
-Read full README             Build folder snapshot
-      │                      (max depth 3, skip .git /
-      │                       node_modules / __pycache__)
-      │                           │
-      │                      Read key manifest files:
-      │                      package.json, pyproject.toml,
-      │                      Cargo.toml, go.mod, pom.xml
-      │                           │
-      │                      Scan top-level source files
-      │                      for imports + class/fn names
-      │                           │
-      └─────────┬─────────────────┘
-                ▼
-         Construct LLM prompt
-         (see Prompt Contract below)
-                │
-                ▼
-         Parse structured JSON response
-                │
-                ▼
-         Return RepoAnalysisResult
+Input: zip upload or git_url
+          │
+          ▼
+   git_connector.py / zip_extractor.py
+   → local directory path
+          │
+          ▼
+   Walk tree (depth ≤ 3, skip .git / node_modules / __pycache__ / *.lock)
+          │
+          ├── README.md / README.rst / README.txt found?
+          │       YES → read full content
+          │       NO  → build folder snapshot +
+          │             read manifest files (package.json, pyproject.toml,
+          │             go.mod, Cargo.toml, pom.xml) +
+          │             scan top-level source files for imports + signatures
+          │
+          ▼
+   analyzer_prompts.py → construct LLM prompt
+          │
+          ▼
+   claude_client.py → structured JSON response
+          │
+          ▼
+   Validate with Pydantic → return RepoAnalysisResult
 ```
 
-### Prompt Contract
+### Prompt Contract (`analyzer_service/prompts/analyzer_prompts.py`)
 
-**System prompt** (`llm/prompts/repo_analyzer_prompts.py → SYSTEM_PROMPT`):
-
+**System prompt:**
 ```
-You are a senior software architect. Your job is to analyze a code repository
-and produce a clear, accurate, developer-friendly summary.
+You are a senior software architect. Analyze the provided repository context
+and return ONLY valid JSON with no markdown fences, matching this schema:
 
-Always respond with valid JSON matching this schema:
 {
-  "summary": "string — 2-4 sentences on what the project does",
-  "tech_stack": ["list of detected technologies"],
-  "architecture": "string — description of structural patterns used",
-  "key_modules": [
-    { "name": "string", "role": "string" }
-  ],
-  "entry_points": ["list of files/commands to start exploring"],
-  "readme_found": boolean
+  "summary": "2-4 sentences describing what this project does",
+  "tech_stack": ["list", "of", "technologies"],
+  "architecture": "description of the structural patterns used",
+  "key_modules": [{ "name": "string", "role": "string" }],
+  "entry_points": ["file or command to start exploring"],
+  "readme_found": true | false
 }
 
-Be factual. Do not invent features not evidenced in the code.
+Be factual. Do not invent features not evidenced in the provided context.
 ```
 
-**User prompt template:**
-
+**User prompt:**
 ```
-Analyze the following repository context and produce the JSON summary.
+Analyze this repository and return the JSON summary.
 
---- README CONTENT (if found) ---
-{readme_content}
+README:
+{readme_content_or_NONE}
 
---- FOLDER STRUCTURE ---
+Folder structure:
 {folder_tree}
 
---- KEY FILES CONTENT ---
+Key file excerpts:
 {key_files_content}
 ```
 
-### Input / Output Schema
+### Output Schema
 
 ```python
-# schemas/repo_analyzer.py
-
-class RepoAnalyzeRequest(BaseModel):
-    project_id: UUID
-    git_url: Optional[HttpUrl] = None   # mutually exclusive with file upload
-    # file upload handled as UploadFile in endpoint
+class KeyModule(BaseModel):
+    name: str
+    role: str
 
 class RepoAnalysisResult(BaseModel):
     project_id: UUID
@@ -139,349 +206,267 @@ class RepoAnalysisResult(BaseModel):
 
 ### Error Handling
 
-| Condition | Behavior |
-|-----------|----------|
-| LLM returns invalid JSON | Retry up to 2 times with stricter prompt; raise `LLMResponseError` if still invalid |
-| Repo has no readable files | Return summary noting empty or binary-only repository |
-| Git clone fails (bad URL / auth) | Raise `IngestionError` with user-facing message |
-| Repo exceeds size limit | Raise `FileSizeLimitError`; limit set in `core/config.py` |
+| Condition | Behaviour |
+|-----------|-----------|
+| LLM returns invalid JSON | Retry ×2 with stricter prompt; raise `LLMParseError` |
+| Git clone fails | Raise `IngestionError` with user-facing message |
+| No readable files in repo | Return summary noting empty or binary-only repo |
+| Repo exceeds size limit | Raise `FileSizeLimitError` (limit in `.env`) |
 
 ---
 
-## Agent 2 — Knowledge Chat Agent
+## Phase 2 — Chat Service (RAG)
 
-**File:** `AI_pipeline/app/agents/chat_agent.py`
-**Service:** `AI_pipeline/app/services/chat_service.py`
-**Endpoint:** `POST /api/v1/chat`
+**Location:** `Backend/chat_service/`
+**Endpoint:** `POST /api/v1/chat` (SSE stream)
 
-### Responsibility
-
-Answer user questions grounded in the project's ingested documents and code. Supports:
-- Policy and process questions (`"What is the leave policy?"`)
-- Code structure questions (`"How is authentication implemented?"`)
-- Improvement suggestions (`"What can we improve in the payments module?"`)
-- Cross-document synthesis (`"Compare the old and new onboarding guides"`)
-
-### RAG Pipeline
+### Full Flow
 
 ```
-User Question (+ chat_history)
-         │
-         ▼
-  Embed question with OpenAI
-         │
-         ▼
-  VectorStore.query(
-    query_vector,
-    filter={"project_id": project_id},
-    top_k=20
-  )
-         │
-         ▼
-  Reranker.rerank(question, candidates)   ← cross-encoder scores
-  → top 5-7 chunks retained
-         │
-         ▼
-  ContextBuilder.build(chunks)
-  → formatted context string with source labels
-         │
-         ▼
-  LLM.stream(system_prompt, context, question, history)
-         │
-         ▼
-  Streamed tokens + source list
+User Question + chat_history
+        │
+        ▼
+Embed question (OpenAI text-embedding-3-small)
+        │
+        ▼
+Qdrant query (top_k=20, filter: project_id)
+        │
+        ▼
+Reranker (cross-encoder, top 7 retained)
+        │
+        ▼
+decision_layer.py → branch
+        │
+  ┌─────┼──────────┐
+  ▼     ▼          ▼
+ >0.80  0.60-0.80  <0.60
+  │        │         │
+  ▼        ▼         ▼
+Internal  Merge    General
+ RAG     (both)     LLM
+  │        │         │
+  └────────┼─────────┘
+           ▼
+   prompt_builder/ → final prompt
+           │
+           ▼
+   claude_client.py → stream tokens
+           │
+           ▼
+   SSE: token events → done event (sources)
 ```
 
 ### Prompt Contract
 
-**System prompt** (`llm/prompts/chat_prompts.py → SYSTEM_PROMPT`):
-
+**System prompt (internal RAG branch):**
 ```
 You are an internal knowledge assistant for an engineering team.
-You answer questions based ONLY on the provided context.
-If the answer is not in the context, say: "I don't have enough information
-to answer that from the available documents."
-
+Answer based ONLY on the provided context.
+If the context does not contain the answer, say: "I don't have enough
+information from your team's documents to answer this."
 Always cite sources using [Source N] notation.
-Be concise. Use bullet points for lists. Use code blocks for code snippets.
+```
+
+**System prompt (general LLM branch):**
+```
+You are a helpful assistant. Answer the following question using
+your general knowledge. Note: this answer is NOT based on the
+user's internal documents.
 ```
 
 **User prompt template:**
-
 ```
 Context:
-{context}
+{context_with_source_labels}
 
 Chat History:
-{chat_history}
+{formatted_history}
 
 Question: {question}
 
 Answer:
 ```
 
-### Context Window Management
-
-- Max context chunks: 7 (configurable via `RAG_TOP_K` in config)
-- Max tokens per chunk: 400
-- Total context budget: ~2800 tokens (leaving room for system prompt + output)
-- If a chunk exceeds budget, it is trimmed at sentence boundary
-
-### Source Citations
-
-Each answer includes a `sources` array:
+### Source Citation Format
 
 ```json
 {
-  "answer": "The leave policy states that...[Source 1]",
+  "answer": "The leave policy grants 20 days per year [Source 1]...",
+  "answer_source": "internal | merge | general",
   "sources": [
-    {
-      "source_id": 1,
-      "file": "hr/leave_policy_2024.pdf",
-      "page": 3,
-      "symbol": null,
-      "score": 0.91
-    },
-    {
-      "source_id": 2,
-      "file": "src/auth/auth_service.py",
-      "page": null,
-      "symbol": "AuthService.verify_token",
-      "score": 0.87
-    }
+    { "id": 1, "file": "hr/leave_policy.pdf", "page": 4, "score": 0.91 },
+    { "id": 2, "file": "src/auth/service.py", "symbol": "AuthService.verify", "score": 0.85 }
   ]
 }
 ```
 
-### Input / Output Schema
+### Context Window Budget
 
-```python
-# schemas/chat.py
+| Component | Approx tokens |
+|-----------|---------------|
+| System prompt | ~200 |
+| Retrieved chunks (7 × 400) | ~2,800 |
+| Chat history (last 4 turns) | ~800 |
+| Question | ~100 |
+| Output headroom | 1,024 |
+| **Total** | **~4,924** |
 
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant"]
-    content: str
+Fits within Claude's context window. History is pruned if it exceeds the budget.
 
-class ChatRequest(BaseModel):
-    project_id: UUID
-    message: str
-    chat_history: List[ChatMessage] = []
+---
 
-class SourceCitation(BaseModel):
-    source_id: int
-    file: str
-    page: Optional[int]
-    symbol: Optional[str]
-    score: float
+## AI Pipeline — Ingestion
 
-class ChatResponse(BaseModel):
-    answer: str
-    sources: List[SourceCitation]
-```
-
-### Streaming
-
-The `/chat` endpoint returns `text/event-stream` (SSE). Token chunks are emitted as they arrive from Claude. The final event contains the full `sources` list.
+### Orchestration Flow (`orchestration/ingestion_pipeline.py`)
 
 ```
-event: token
-data: {"token": "The "}
+Source (connector / upload)
+        │
+        ▼
+1. Connector pulls raw files to local temp dir
+        │
+        ▼
+2. Extractor dispatches by extension:
+   .pdf → pdf_extractor   .docx → docx_extractor
+   .html → html_extractor  .py/.ts/etc → code_extractor
+   .zip → zip_extractor (then recurse into archive)
+        │
+        ▼
+3. Cleaner normalises whitespace, encoding
+        │
+        ▼
+4. Chunker splits by type:
+   text/docs → text_chunker (512 tok, 50 overlap)
+   code      → code_chunker (function/class level)
+        │
+        ▼
+5. metadata_extractor enriches chunks
+   { project_id, source, file_path, language, symbol,
+     page, chunk_index, ingested_at }
+        │
+        ▼
+6. embedding_generator batch-embeds (100 chunks per call)
+        │
+        ▼
+7. index_manager upserts into Qdrant
+   (chunk id = hash(project_id + file_path + chunk_index)
+    → idempotent re-ingestion)
+```
 
-event: token
-data: {"token": "leave policy..."}
+### Scheduler (`orchestration/scheduler.py`)
 
-event: done
-data: {"sources": [...]}
+APScheduler jobs for automatic re-ingestion:
+- Confluence spaces: every 6 hours
+- Jira projects: every 2 hours
+- GitHub repos: on push webhook or every 24 hours
+- SharePoint: every 12 hours
+
+---
+
+## Code Repository Ingestion Deep Dive
+
+### Why AST-level chunking
+
+| Approach | Problem |
+|----------|---------|
+| Line-based (512 chars) | Splits functions mid-way; retrieval returns broken context |
+| File-level | Too large for embedding window; every query matches the whole file |
+| **AST / function-level** | Each chunk is one complete semantic unit; clean retrieval |
+
+### `code_extractor.py` per language
+
+| Language | Parser |
+|----------|--------|
+| Python | stdlib `ast` — walks `FunctionDef`, `AsyncFunctionDef`, `ClassDef` |
+| JavaScript / TypeScript | `tree-sitter-javascript` / `tree-sitter-typescript` |
+| Java | `tree-sitter-java` |
+| Go | `tree-sitter-go` |
+| Rust | `tree-sitter-rust` (optional) |
+
+### `code_chunker.py` splitting rules
+
+1. Each top-level function → 1 chunk
+2. Each class + its `__init__` → 1 chunk; each other method → 1 chunk
+3. Module-level docstring / comments → 1 chunk
+4. Functions > 300 lines → split at logical block boundaries (blank lines between sections)
+
+### Chunk metadata example
+
+```json
+{
+  "project_id": "abc-123",
+  "source_type": "code",
+  "file_path": "src/auth/auth_service.py",
+  "language": "python",
+  "symbol": "AuthService.verify_token",
+  "class_name": "AuthService",
+  "function_name": "verify_token",
+  "start_line": 45,
+  "end_line": 72,
+  "chunk_index": 3
+}
 ```
 
 ---
 
-## Shared Interfaces
+## LLM Clients
 
-### IAgent (`agents/base.py`)
+### `chat_service/llm_clients/claude_client.py`
 
-```python
-from abc import ABC, abstractmethod
-from typing import Any, Dict
+- Anthropic Python SDK, async streaming
+- Prompt caching on system prompts (saves ~60% tokens on repeat calls)
+- Retry with exponential backoff (3 attempts, base 1s)
+- `temperature=0` for factual RAG answers; `temperature=0.3` for merge branch
 
-class IAgent(ABC):
-    @abstractmethod
-    async def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Execute the agent and return a structured result."""
-        ...
-```
+### `chat_service/llm_clients/general_llm_client.py`
 
-### ILLM (`llm/base.py`)
-
-```python
-from abc import ABC, abstractmethod
-from typing import AsyncIterator
-
-class ILLM(ABC):
-    @abstractmethod
-    async def complete(self, system: str, user: str) -> str: ...
-
-    @abstractmethod
-    async def stream(self, system: str, user: str) -> AsyncIterator[str]: ...
-```
-
-### IVectorStore (`vectorstore/base.py`)
-
-```python
-from abc import ABC, abstractmethod
-from typing import List, Dict, Any
-
-class IVectorStore(ABC):
-    @abstractmethod
-    async def upsert(self, chunks: List[Dict[str, Any]]) -> None: ...
-
-    @abstractmethod
-    async def query(
-        self, vector: List[float], filter: Dict, top_k: int
-    ) -> List[Dict[str, Any]]: ...
-
-    @abstractmethod
-    async def delete_by_project(self, project_id: str) -> None: ...
-```
-
-### IParser (`ingestion/parsers/base.py`)
-
-```python
-from abc import ABC, abstractmethod
-from typing import List
-from dataclasses import dataclass
-
-@dataclass
-class Document:
-    content: str
-    metadata: dict
-
-class IParser(ABC):
-    @abstractmethod
-    def parse(self, file_path: str) -> List[Document]: ...
-
-    @property
-    @abstractmethod
-    def supported_extensions(self) -> List[str]: ...
-```
-
-### IChunker (`chunking/base.py`)
-
-```python
-from abc import ABC, abstractmethod
-from typing import List
-from ingestion.parsers.base import Document
-
-class IChunker(ABC):
-    @abstractmethod
-    def chunk(self, document: Document) -> List[Document]: ...
-```
-
-### IEmbedder (`embeddings/base.py`)
-
-```python
-from abc import ABC, abstractmethod
-from typing import List
-
-class IEmbedder(ABC):
-    @abstractmethod
-    async def embed(self, texts: List[str]) -> List[List[float]]: ...
-```
-
-### ILoader (`ingestion/loaders/base.py`)
-
-```python
-from abc import ABC, abstractmethod
-from typing import List
-from pathlib import Path
-
-class ILoader(ABC):
-    @abstractmethod
-    async def load(self, source: str) -> Path:
-        """Download/extract source and return local directory path."""
-        ...
-```
-
----
-
-## LLM Client Layer
-
-**File:** `AI_pipeline/app/llm/claude_client.py`
-
-Uses the Anthropic Python SDK with:
-- **Prompt caching** on system prompts (saves tokens on repeated calls)
-- **Streaming** via `client.messages.stream()`
-- **Retry logic** with exponential backoff (3 attempts)
-- **Model** configurable via `CLAUDE_MODEL` env var (default: `claude-sonnet-4-6`)
-
-```python
-# Key config
-model: str = settings.CLAUDE_MODEL        # claude-sonnet-4-6
-max_tokens: int = 4096
-temperature: float = 0.0                  # deterministic for structured output
-```
-
-For structured JSON output (Phase 1), `temperature=0` and a JSON schema is injected into the system prompt. Responses are validated against Pydantic models.
+- Default: Claude without internal context injection (same SDK, different system prompt)
+- Can be swapped to OpenAI GPT-4o via env var `GENERAL_LLM_PROVIDER=openai`
+- Answers are always prefixed with the "general knowledge" disclaimer
 
 ---
 
 ## Prompt Engineering Guidelines
 
-1. **System prompts are cached** — keep them stable across calls. Volatile data (context, question) goes in the user turn only.
+1. **System prompts are prompt-cached** — keep them static. All dynamic data (context, question, history) goes in the user turn.
 
-2. **JSON responses** — always specify the exact schema in the system prompt. Use `"Respond with ONLY valid JSON, no markdown fences"`.
+2. **JSON output from Phase 1** — set `temperature=0`, instruct `"Respond with ONLY valid JSON, no markdown"`, validate with Pydantic. Retry on parse failure.
 
-3. **Grounding** — for RAG answers, instruct the model explicitly: `"Answer ONLY from the provided context. Do not hallucinate."` and include a fallback: `"If the context doesn't contain the answer, say so."`.
+3. **Source labels** — always number sources `[Source N]` inline so the UI can linkify them back to the source metadata array.
 
-4. **Few-shot examples** — for Phase 1 architecture summaries, include 1 short example in the system prompt to anchor format and tone.
+4. **Merge branch tone** — prompt the model to clearly separate internal facts (`[From your KB]`) from general knowledge (`[General]`). Users must know the difference.
 
-5. **Token budgeting** — always leave at least 1024 tokens for the model output. Calculate: `system_tokens + context_tokens + history_tokens + 1024 ≤ model_context_limit`.
+5. **History pruning** — keep the last N turns that fit the token budget. Summarise older turns into a single compressed context line rather than dropping them entirely.
 
-6. **Chat history pruning** — keep the last N turns that fit within budget. Summarize older turns if conversation grows long.
-
----
-
-## Adding a New Agent
-
-1. Create `AI_pipeline/app/agents/my_agent.py`
-2. Inherit from `IAgent` and implement `run()`
-3. Create a service `services/my_agent_service.py` that instantiates and calls it
-4. Add schemas in `api/v1/schemas/my_agent.py`
-5. Create endpoint `api/v1/endpoints/my_agent.py`
-6. Register the router in `api/v1/router.py`
-7. Add prompts in `llm/prompts/my_agent_prompts.py`
+6. **Score transparency** — log the top Qdrant score and the branch taken for every query. This is the primary debugging signal when answers are wrong.
 
 ---
 
-## Operational Notes
+## Extending the Platform
 
-### Ingestion Idempotency
+### Add a new connector
 
-Re-ingesting the same file for the same `project_id` deletes old chunks before inserting new ones. The chunk `id` is a hash of `(project_id + file_path + chunk_index)`.
+1. Create `AI_pipeline/connectors/my_connector.py` implementing `pull(config) -> Path`
+2. Register it in `orchestration/ingestion_pipeline.py` source dispatch map
+3. Add scheduler job in `orchestration/scheduler.py`
 
-### Vector Store Isolation
+### Add a new file extractor
 
-Each project's chunks are tagged with `project_id` in metadata. All vector queries apply a metadata filter so projects never see each other's data.
+1. Create `AI_pipeline/extraction/my_extractor.py` implementing `extract(path) -> List[Document]`
+2. Add extension mapping in `extraction/__init__.py`
 
-### Rate Limits
+### Add a new language to code extraction
 
-- OpenAI Embeddings: batched in groups of 100 chunks per API call
-- Claude: max 1 concurrent request per project (queued, not rejected)
+1. Install the tree-sitter grammar: `tree-sitter-mylang`
+2. Add a language handler in `extraction/code_extractor.py`
+3. Extend chunking rules in `processing/code_chunker.py`
 
-### Cold Start
+### Change the LLM provider
 
-On first run, ChromaDB creates its persist directory automatically. No manual migration needed for development. For production, use a managed vector DB (Pinecone, pgvector) and set the appropriate env vars.
+1. Create `chat_service/llm_clients/my_llm_client.py`
+2. Implement `complete(system, user) -> str` and `stream(system, user) -> AsyncIterator[str]`
+3. Switch the binding via `LLM_PROVIDER` env var in `api_gateway/main.py` dependency injection
 
-### Logging
+### Tune RAG thresholds
 
-All agents emit structured JSON logs via `core/logging.py`:
-```json
-{
-  "timestamp": "2026-06-03T10:00:00Z",
-  "level": "INFO",
-  "agent": "RepoAnalyzerAgent",
-  "project_id": "uuid",
-  "event": "analysis_complete",
-  "duration_ms": 1240
-}
-```
+Set `RAG_HIGH_THRESHOLD` and `RAG_LOW_THRESHOLD` in `.env`. Monitor branch distribution in logs — if > 40% of queries hit the general branch, your KB coverage is low. If > 90% hit internal, thresholds may be too loose.
