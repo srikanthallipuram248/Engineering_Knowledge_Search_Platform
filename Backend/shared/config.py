@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://qdrant:6333"
     QDRANT_COLLECTION: str = "eksp_knowledge"
 
+    # Groq - used by analyzer_service
+    GROQ_API_KEY: str = ""
+    GROQ_ANALYSIS_MODEL: str = "llama-3.3-70b-versatile"
+
     # RAG thresholds (tunable without code changes)
     RAG_HIGH_THRESHOLD: float = 0.80
     RAG_LOW_THRESHOLD: float = 0.60
