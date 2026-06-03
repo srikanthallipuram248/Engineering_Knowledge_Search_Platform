@@ -19,6 +19,9 @@ python-multipart==0.0.12
 # HTTP client (to call AI pipeline)
 httpx==0.27.2
 
-# Analyzer service
-groq==0.13.1
+# Analyzer service — LangGraph + LangChain
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-groq>=0.2.0
 gitpython==3.1.43
