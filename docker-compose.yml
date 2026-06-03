@@ -2,20 +2,44 @@ services:
 
   frontend:
     build: ./Frontend
-    container_name: react_frontend
+    container_name: eksp_frontend
     ports:
       - "3000:80"
     depends_on:
       - backend
+    networks:
+      - eksp_network
 
   backend:
     build: ./Backend
-    container_name: node_backend
+    container_name: eksp_backend
     ports:
       - "5000:5000"
+    env_file:
+      - ./Backend/.env
+    depends_on:
+      - ai-pipeline
+    networks:
+      - eksp_network
+    volumes:
+      - ./Backend:/app
 
   ai-pipeline:
     build: ./AI_pipeline
-    container_name: ai_pipeline
+    container_name: eksp_ai_pipeline
     ports:
       - "8000:8000"
+    env_file:
+      - ./AI_pipeline/.env
+    networks:
+      - eksp_network
+    volumes:
+      - ./AI_pipeline:/app
+      - ai_pipeline_data:/app/data
+
+volumes:
+  ai_pipeline_data:
+
+networks:
+  eksp_network:
+    driver: bridge
