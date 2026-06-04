@@ -6,15 +6,6 @@ uvicorn[standard]==0.30.6
 pydantic==2.9.2
 pydantic-settings==2.5.2
 
-# LLM — Anthropic Claude
-anthropic==0.40.0
-
-# Embeddings
-openai==1.54.3
-
-# Vector store
-chromadb==0.5.20
-
 # PDF parsing
 pymupdf==1.24.13
 
@@ -32,3 +23,7 @@ aiofiles==24.1.0
 
 # Text splitting
 tiktoken==0.8.0
+
+groq>=0.30.0
+sentence-transformers==3.0.1
+qdrant-client==1.11.0
