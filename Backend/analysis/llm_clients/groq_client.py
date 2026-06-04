@@ -2,7 +2,7 @@ from functools import lru_cache
 
 from langchain_groq import ChatGroq
 
-from shared.config import settings
+from utils.config import settings
 
 
 @lru_cache(maxsize=1)

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from database.postgres.base import Base
 from database.postgres.session import engine
 import database.postgres.models  # noqa: F401 — registers all models with Base
-from shared.config import settings
+from utils.config import settings
 
 
 @asynccontextmanager
@@ -39,7 +39,7 @@ app.add_middleware(
 
 
 # ── Routers ────────────────────────────────────────────────────────────────
-from analyzer_service.controllers import router as analyzer_router
+from analysis.controllers import router as analyzer_router
 
 app.include_router(analyzer_router, prefix="/api/v1/analyze", tags=["Analyzer"])
 

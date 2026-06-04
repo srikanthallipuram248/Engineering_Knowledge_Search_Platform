@@ -21,13 +21,13 @@ Graph topology:
 
 from langgraph.graph import END, StateGraph
 
-from analyzer_service.graph.nodes import (
+from analysis.graph.nodes import (
     clone_and_scan,
     handle_error,
     parse_output,
     run_llm,
 )
-from analyzer_service.graph.state import RepoAnalysisState
+from analysis.graph.state import RepoAnalysisState
 
 
 # ── Routing logic ──────────────────────────────────────────────────────────
