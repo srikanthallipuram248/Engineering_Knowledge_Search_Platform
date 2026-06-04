@@ -1,3 +1,4 @@
+from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 # ── System prompt ──────────────────────────────────────────────────────────
@@ -49,7 +50,7 @@ Rules:
 def get_chat_prompt() -> ChatPromptTemplate:
     """Return a LangChain ChatPromptTemplate for the repo analysis chain."""
     return ChatPromptTemplate.from_messages([
-        ("system", SYSTEM_PROMPT),
+        SystemMessage(content=SYSTEM_PROMPT),  # literal — curly braces in JSON schema won't be parsed as template vars
         ("human", "{user_input}"),
     ])
 
