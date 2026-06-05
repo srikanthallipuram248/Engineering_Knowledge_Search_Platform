@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from analyzer_service.graph.builder import run_analysis_graph
-from analyzer_service.schemas import RepoAnalysisResult
+from analysis.graph.builder import run_analysis_graph
+from analysis.schemas import RepoAnalysisResult
 
 router = APIRouter()
 
