@@ -12,11 +12,11 @@ import asyncio
 import json
 import re
 
-from analyzer_service.graph.state import RepoAnalysisState
-from analyzer_service.llm_clients.groq_client import get_llm
-from analyzer_service.prompts.analyzer_prompts import build_user_context, get_chat_prompt
-from analyzer_service.schemas import RepoAnalysisResult
-from analyzer_service.services.repo_analyzer import scan_git_url
+from analysis.graph.state import RepoAnalysisState
+from analysis.llm_clients.groq_client import get_llm
+from analysis.prompts.analyzer_prompts import build_user_context, get_chat_prompt
+from analysis.schemas import RepoAnalysisResult
+from analysis.services.repo_analyzer import scan_git_url
 
 # ── README post-processing helpers ────────────────────────────────────────
 # Covers Python, JS/TS, Go, Rust, Java, Make, Docker — not just Python CLI

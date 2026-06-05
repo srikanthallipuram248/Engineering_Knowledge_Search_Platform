@@ -1,12 +1,4 @@
-# Web framework
-fastapi==0.115.0
-uvicorn[standard]==0.30.6
-
-# Settings & validation
-pydantic==2.9.2
-pydantic-settings==2.5.2
-
-groq==0.11.0
+groq>=0.30.0
 sentence-transformers==3.0.1
 qdrant-client==1.11.0
 

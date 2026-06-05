@@ -22,15 +22,15 @@ This document covers the design, flow, prompt contracts, and extension points fo
 
 ```
 Backend/
-├── api_gateway/            Entry point, middleware (auth, rate-limit, CORS)
-├── auth_service/           User registration, login, JWT
-├── search_service/         Semantic search — embed query → Qdrant → rerank → return chunks
-├── chat_service/           RAG chat — retrieval → decision layer → LLM → stream answer
+├── ai/            Entry point, middleware (auth, rate-limit, CORS)
+├── auth/           User registration, login, JWT
+├── search/         Semantic search — embed query → Qdrant → rerank → return chunks
+├── chat/           RAG chat — retrieval → decision layer → LLM → stream answer
 │   └── rag_engine/
 │       ├── decision_layer.py   ← THE core routing logic (3 branches)
 │       └── response_merger.py  ← blends internal + general LLM
-├── analyzer_service/       Phase 1 — repo upload/clone → architecture summary
-└── document_service/       File uploads, metadata, viewer pre-extraction
+├── analysis/       Phase 1 — repo upload/clone → architecture summary
+└── document_controller/       File uploads, metadata, viewer pre-extraction
 
 AI_pipeline/
 ├── connectors/             Pull content from GitHub, Git, Jira, Confluence, SharePoint
@@ -45,7 +45,7 @@ AI_pipeline/
 
 ## Hybrid RAG Decision Layer
 
-**File:** `Backend/chat_service/rag_engine/decision_layer.py`
+**File:** `Backend/chat/rag_engine/decision_layer.py`
 
 ### The Problem
 
@@ -118,7 +118,7 @@ Thresholds are configurable via env vars `RAG_HIGH_THRESHOLD` and `RAG_LOW_THRES
 
 ## Phase 1 — Repo Analyzer Service
 
-**Location:** `Backend/analyzer_service/`
+**Location:** `Backend/analysis/`
 **Endpoint:** `POST /api/v1/analyze/repo`
 
 ### Responsibility
@@ -154,7 +154,7 @@ Input: zip upload or git_url
    Validate with Pydantic → return RepoAnalysisResult
 ```
 
-### Prompt Contract (`analyzer_service/prompts/analyzer_prompts.py`)
+### Prompt Contract (`analysis/prompts/analyzer_prompts.py`)
 
 **System prompt:**
 ```
@@ -217,7 +217,7 @@ class RepoAnalysisResult(BaseModel):
 
 ## Phase 2 — Chat Service (RAG)
 
-**Location:** `Backend/chat_service/`
+**Location:** `Backend/chat/`
 **Endpoint:** `POST /api/v1/chat` (SSE stream)
 
 ### Full Flow
@@ -396,7 +396,7 @@ APScheduler jobs for automatic re-ingestion:
 {
   "project_id": "abc-123",
   "source_type": "code",
-  "file_path": "src/auth/auth_service.py",
+  "file_path": "src/auth/auth.py",
   "language": "python",
   "symbol": "AuthService.verify_token",
   "class_name": "AuthService",
@@ -411,14 +411,14 @@ APScheduler jobs for automatic re-ingestion:
 
 ## LLM Clients
 
-### `chat_service/llm_clients/claude_client.py`
+### `chat/llm_clients/claude_client.py`
 
 - Anthropic Python SDK, async streaming
 - Prompt caching on system prompts (saves ~60% tokens on repeat calls)
 - Retry with exponential backoff (3 attempts, base 1s)
 - `temperature=0` for factual RAG answers; `temperature=0.3` for merge branch
 
-### `chat_service/llm_clients/general_llm_client.py`
+### `chat/llm_clients/general_llm_client.py`
 
 - Default: Claude without internal context injection (same SDK, different system prompt)
 - Can be swapped to OpenAI GPT-4o via env var `GENERAL_LLM_PROVIDER=openai`
@@ -463,9 +463,9 @@ APScheduler jobs for automatic re-ingestion:
 
 ### Change the LLM provider
 
-1. Create `chat_service/llm_clients/my_llm_client.py`
+1. Create `chat/llm_clients/my_llm_client.py`
 2. Implement `complete(system, user) -> str` and `stream(system, user) -> AsyncIterator[str]`
-3. Switch the binding via `LLM_PROVIDER` env var in `api_gateway/main.py` dependency injection
+3. Switch the binding via `LLM_PROVIDER` env var in `ai/main.py` dependency injection
 
 ### Tune RAG thresholds
 
