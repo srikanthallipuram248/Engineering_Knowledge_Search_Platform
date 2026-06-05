@@ -46,6 +46,8 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+    volumes:
+      - ./Backend:/app
     networks:
       - eksp_network
 
@@ -60,6 +62,7 @@ services:
       qdrant:
         condition: service_started
     volumes:
+      - ./AI_pipeline:/app
       - uploads_data:/app/uploads
     networks:
       - eksp_network

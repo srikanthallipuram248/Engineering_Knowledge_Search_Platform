@@ -3,10 +3,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from controllers.ingestion_controller import router as ingest_router
+from indexing.index_manager import create_collection
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # TODO: initialise Qdrant collection on startup
+    # Initialise Qdrant collection on startup
+    create_collection()
+
     yield
 
 
@@ -24,12 +29,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# ── Routers (uncomment as you implement each) ──────────────────────────────
-# from orchestration.ingestion_pipeline import router as ingest_router
-# app.include_router(ingest_router, prefix="/api/v1/ingest", tags=["Ingestion"])
+# ── Routers ───
+app.include_router(
+    ingest_router,
+    prefix="/api/v1/ingest",
+    tags=["Ingestion"],
+)
 
 
 @app.get("/health", tags=["Health"])
 async def health():
-    return {"status": "ok", "service": "ai-pipeline"}
+    return {
+        "status": "ok",
+        "service": "ai-pipeline",
+    }
