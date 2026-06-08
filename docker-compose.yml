@@ -46,6 +46,8 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      ai-pipeline:
+        condition: service_started
     volumes:
       - ./Backend:/app
     networks:

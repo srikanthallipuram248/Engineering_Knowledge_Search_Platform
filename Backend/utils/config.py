@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     # AI pipeline internal URL
     AI_PIPELINE_URL: str = "http://ai-pipeline:8000"
+    EMBEDDING_REQUEST_TIMEOUT: float = 60.0
 
     # Qdrant (used by search + chat services)
     QDRANT_URL: str = "http://qdrant:6333"
