@@ -1,10 +1,8 @@
-﻿from chat.rag_engine.decision_layer import (
-    decide_context,
-)
+﻿import asyncio
 
+from chat.rag_engine.decision_layer import decide_context
 from chat.services.generator import (
     generate_general_response,
-    generate_rag_response,
     generate_hybrid_response,
 )
 
@@ -19,35 +17,18 @@ async def get_response(
     contexts = decision["contexts"]
 
     if mode == "llm_only":
-
-        answer = generate_general_response(
-            query
+        answer = await asyncio.to_thread(
+            generate_general_response, query
         )
-    
-    elif mode == "hybrid":
-
-        context_text = "\n\n".join(
-            ctx["text"]
-            for ctx in contexts
-            if ctx["text"]
-        )
-
-        answer = generate_hybrid_response(
-            query, 
-            context_text,
-        )
-
     else:
-
         context_text = "\n\n".join(
             ctx["text"]
             for ctx in contexts
             if ctx["text"]
         )
 
-        answer = generate_rag_response(
-            query,
-            context_text,
+        answer = await asyncio.to_thread(
+            generate_hybrid_response, query, context_text
         )
 
     return {
@@ -57,8 +38,8 @@ async def get_response(
             {
                 "source": ctx["source"],
                 "page": ctx["page"],
-                "score": ctx["score"],
+                "score": ctx.get("rerank_score", ctx["score"]),
             }
             for ctx in contexts
-        ],
+        ] if mode == "hybrid_rag" else [],
     }

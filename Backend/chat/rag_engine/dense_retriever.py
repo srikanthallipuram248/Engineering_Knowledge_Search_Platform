@@ -27,7 +27,7 @@ async def get_query_embedding(
         return response.json()["embedding"]
 
 
-async def retrieve_context(
+async def retrieve_dense(
     query: str,
     limit: int = 5
 ):

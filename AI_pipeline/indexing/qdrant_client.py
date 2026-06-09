@@ -1,4 +1,4 @@
-from qdrant_client import QdrantClient
+﻿from qdrant_client import QdrantClient
 from shared.config import settings
 
 _client = None

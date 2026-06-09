@@ -30,8 +30,7 @@ class Settings(BaseSettings):
     GROQ_ANALYSIS_MODEL: str = "llama-3.3-70b-versatile"
 
     # RAG thresholds (tunable without code changes)
-    RAG_HIGH_THRESHOLD: float = 0.80
-    RAG_LOW_THRESHOLD: float = 0.60
+    HYBRID_RAG_THRESHOLD: float = 5.0
 
 
 settings = Settings()

@@ -1,5 +1,5 @@
 ﻿
-from chat.rag_engine.retriever import retrieve_context
+from chat.rag_engine.hybrid_retriever import hybrid_retrieve
 
 from utils.config import settings
 
@@ -14,7 +14,7 @@ async def decide_context(
     - Pure LLM
     """
 
-    contexts = await retrieve_context(query)
+    contexts = await hybrid_retrieve(query)
 
     if not contexts:
         return {
@@ -22,13 +22,10 @@ async def decide_context(
             "contexts": []
         }
 
-    best_score = contexts[0]["score"]
+    best_score = contexts[0]["rerank_score"]
 
-    if best_score >= settings.RAG_HIGH_THRESHOLD:
-        mode = "rag"
-
-    elif best_score >= settings.RAG_LOW_THRESHOLD:
-        mode = "hybrid"
+    if best_score >= settings.HYBRID_RAG_THRESHOLD:
+        mode = "hybrid_rag"
 
     else:
         mode = "llm_only"
