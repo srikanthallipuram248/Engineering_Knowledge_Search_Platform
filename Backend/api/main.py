@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -12,6 +13,9 @@ from utils.config import settings
 # Routers
 from api.routes.auth_routes import router as auth_router
 from analysis.controllers import router as analysis_router
+from chat.chat_controller import router as chat_router
+from chat.rag_engine.bm25_retriever import warm_bm25_cache
+from chat.rag_engine.reranker import get_reranker
 
 
 @asynccontextmanager
@@ -27,6 +31,12 @@ async def lifespan(app: FastAPI):
 
     except Exception as e:
         print(f"Database startup failed: {e}")
+
+    await asyncio.gather(
+        asyncio.to_thread(get_reranker),
+        asyncio.to_thread(warm_bm25_cache),
+    )
+    print("Chat retrieval models warmed up")
 
     yield
 
@@ -68,14 +78,17 @@ app.include_router(
     prefix="/api/v1/analyze",
 )
 
+app.include_router(
+    chat_router,
+    prefix="/api/v1/chat",
+)
+
 # Future routers
 
 # from api.routes.search_routes import router as search_router
-# from api.routes.chat_routes import router as chat_router
 # from api.routes.document_routes import router as document_router
 
 # app.include_router(search_router, prefix="/api/v1/search")
-# app.include_router(chat_router, prefix="/api/v1/chat")
 # app.include_router(document_router, prefix="/api/v1/documents")
 
 

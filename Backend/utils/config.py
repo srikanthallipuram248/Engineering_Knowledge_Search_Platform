@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     # AI pipeline internal URL
     AI_PIPELINE_URL: str = "http://ai-pipeline:8000"
+    EMBEDDING_REQUEST_TIMEOUT: float = 60.0
 
     # Qdrant (used by search + chat services)
     QDRANT_URL: str = "http://qdrant:6333"
@@ -29,8 +30,7 @@ class Settings(BaseSettings):
     GROQ_ANALYSIS_MODEL: str = "llama-3.3-70b-versatile"
 
     # RAG thresholds (tunable without code changes)
-    RAG_HIGH_THRESHOLD: float = 0.80
-    RAG_LOW_THRESHOLD: float = 0.60
+    HYBRID_RAG_THRESHOLD: float = 5.0
 
 
 settings = Settings()
